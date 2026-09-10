@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cuéntalo | Identificación y conteo de objetos con IA</title>
+    <meta name="description" content="Sube una imagen, escribe qué objeto quieres contar y la inteligencia artificial te dice cuántos hay. Proyecto de Fernando Rosales Tello.">
+    <meta name="author" content="Fernando Rosales Tello">
+    <meta name="theme-color" content="#14213D">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2314213D'/%3E%3Cg stroke='%23F6F8F7' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M9 8v16M13.5 8v16M18 8v16M22.5 8v16'/%3E%3C/g%3E%3Cpath d='M6 21 26 11' stroke='%23FFC83D' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+    <svg class="sprite" aria-hidden="true" focusable="false">
+        <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2l1.6-2h5.8L16.5 7h2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12.5" r="3.3" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+        <symbol id="i-swap" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8.7M20 4v4.7h-4.7M20 12a8 8 0 0 1-13.7 5.6L4 15.3M4 20v-4.7h4.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+        <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7.5v5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.4" r="1.2" fill="currentColor"/></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+        <symbol id="i-scan" viewBox="0 0 24 24"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M4 12h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+        <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 11v5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="7.6" r="1.2" fill="currentColor"/></symbol>
+    </svg>
+
+    <header class="topbar">
+        <a class="brand" href="./" aria-label="Cuéntalo, inicio">
+            <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
+                <g stroke="currentColor" stroke-width="4" stroke-linecap="round">
+                    <path d="M12 9v30M19.5 9v30M27 9v30M34.5 9v30"/>
+                </g>
+                <path class="brand-slash" d="M6 31 42 15" stroke-width="5" stroke-linecap="round"/>
+            </svg>
+            <span class="brand-text">
+                <span class="brand-name">Cuéntalo</span>
+                <span class="brand-sub">App web para identificación de patrones</span>
+            </span>
+        </a>
+
+        <div class="author">
+            <span class="author-monogram" aria-hidden="true">FR</span>
+            <span class="author-text">
+                <span class="author-name">Fernando Rosales Tello</span>
+                <span class="author-role">Autor del proyecto</span>
+            </span>
+        </div>
+    </header>
+
+    <main class="workspace">
+        <section class="stage" aria-labelledby="stage-title">
+            <h1 id="stage-title" class="sr-only">Imagen para analizar</h1>
+
+            <div id="dropzone" class="tray" data-state="empty">
+                <div class="tray-empty">
+                    <span class="tray-icon" aria-hidden="true">
+                        <svg><use href="#i-upload"/></svg>
+                    </span>
+                    <p class="tray-title">Sube una imagen con objetos visibles y contables</p>
+                    <p class="tray-help">
+                        <span class="no-touch">Arrástrala aquí, elígela desde tu equipo o pégala con <kbd>Ctrl</kbd> + <kbd>V</kbd>.</span>
+                        <span class="only-touch-text">Elígela desde tu galería o toma una foto.</span>
+                        Acepta JPG, PNG o WEBP de hasta 15&nbsp;MB.
+                    </p>
+                    <div class="tray-actions">
+                        <button type="button" class="btn btn-ink" id="btn-browse">
+                            <svg aria-hidden="true"><use href="#i-upload"/></svg>
+                            Elegir imagen
+                        </button>
+                        <button type="button" class="btn btn-outline only-touch" id="btn-camera">
+                            <svg aria-hidden="true"><use href="#i-camera"/></svg>
+                            Tomar foto
+                        </button>
+                    </div>
+                    <p class="tray-drop-hint" aria-hidden="true">Suelta la imagen para cargarla</p>
+                </div>
+
+                <figure class="preview" id="preview" hidden>
+                    <div class="preview-frame">
+                        <div class="preview-media">
+                            <img id="preview-img" alt="">
+                            <div class="scanline" aria-hidden="true"></div>
+                        </div>
+                    </div>
+                    <figcaption class="preview-bar">
+                        <span class="file-info">
+                            <span id="file-name" class="file-name"></span>
+                            <span id="file-meta" class="file-meta"></span>
+                        </span>
+                        <span class="preview-actions">
+                            <button type="button" class="btn btn-small btn-outline" id="btn-change">
+                                <svg aria-hidden="true"><use href="#i-swap"/></svg>
+                                Cambiar imagen
+                            </button>
+                            <button type="button" class="btn btn-small btn-outline btn-square" id="btn-remove" aria-label="Quitar imagen">
+                                <svg aria-hidden="true"><use href="#i-close"/></svg>
+                            </button>
+                        </span>
+                    </figcaption>
+                </figure>
+
+                <div class="tray-busy" id="tray-busy" hidden>
+                    <span class="spinner" aria-hidden="true"></span>
+                    Preparando imagen…
+                </div>
+            </div>
+
+            <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" hidden>
+            <input type="file" id="camera-input" accept="image/*" capture="environment" hidden>
+        </section>
+
+        <section class="panel" aria-label="Conteo de objetos">
+            <ol class="steps">
+                <li class="step" id="step-image" data-done="false">
+                    <span class="step-marker" aria-hidden="true">
+                        <span class="step-num">1</span>
+                        <svg class="step-check"><use href="#i-check"/></svg>
+                    </span>
+                    <div class="step-body">
+                        <h2 class="step-title">Carga una imagen</h2>
+                        <p class="step-text" id="image-status">Todavía no hay ninguna imagen cargada.</p>
+                    </div>
+                </li>
+
+                <li class="step" id="step-object" data-done="false">
+                    <span class="step-marker" aria-hidden="true">
+                        <span class="step-num">2</span>
+                        <svg class="step-check"><use href="#i-check"/></svg>
+                    </span>
+                    <div class="step-body">
+                        <h2 class="step-title"><label for="object-input">Escribe qué objeto deseas contar</label></h2>
+                        <div class="field">
+                            <input
+                                id="object-input"
+                                class="field-input"
+                                type="text"
+                                maxlength="60"
+                                placeholder="Por ejemplo: manzanas"
+                                autocomplete="off"
+                                spellcheck="true"
+                                enterkeyhint="go"
+                                aria-describedby="object-help"
+                            >
+                        </div>
+                        <p class="step-text" id="object-help">Usa una sola palabra o frase corta. También puedes elegir una sugerencia.</p>
+                        <div class="chips" id="suggestions">
+                            <button type="button" class="chip" data-object="manzanas">🍎 Manzanas</button>
+                            <button type="button" class="chip" data-object="botellas">🍾 Botellas</button>
+                            <button type="button" class="chip" data-object="lápices">✏️ Lápices</button>
+                            <button type="button" class="chip" data-object="monedas">🪙 Monedas</button>
+                            <button type="button" class="chip" data-object="personas">🧍 Personas</button>
+                            <button type="button" class="chip" data-object="automóviles">🚗 Automóviles</button>
+                            <button type="button" class="chip" data-object="libros">📚 Libros</button>
+                        </div>
+                    </div>
+                </li>
+
+                <li class="step" id="step-count" data-done="false">
+                    <span class="step-marker" aria-hidden="true">
+                        <span class="step-num">3</span>
+                        <svg class="step-check"><use href="#i-check"/></svg>
+                    </span>
+                    <div class="step-body">
+                        <h2 class="step-title">Inicia el conteo</h2>
+                        <button type="button" class="btn btn-signal btn-count" id="btn-count">
+                            <span class="spinner" aria-hidden="true"></span>
+                            <svg class="btn-count-icon" aria-hidden="true"><use href="#i-scan"/></svg>
+                            <span id="btn-count-label">Contar objetos</span>
+                        </button>
+                    </div>
+                </li>
+            </ol>
+
+            <div class="alert" id="alert" role="alert" hidden>
+                <svg class="alert-icon" aria-hidden="true"><use href="#i-alert"/></svg>
+                <div class="alert-body">
+                    <p class="alert-title" id="alert-title"></p>
+                    <p class="alert-text" id="alert-text"></p>
+                </div>
+                <button type="button" class="alert-close" id="alert-close" aria-label="Cerrar mensaje">
+                    <svg aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+
+            <section class="result" id="result" data-state="idle" aria-labelledby="result-heading">
+                <h2 class="result-heading" id="result-heading">
+                    <span class="result-emoji" id="result-emoji" aria-hidden="true"></span>
+                    <span id="result-label">Resultado</span>
+                </h2>
+
+                <div class="counter" id="counter" aria-hidden="true">
+                    <div class="counter-window" id="counter-window"></div>
+                </div>
+
+                <p class="result-sentence" id="result-sentence">El conteo aparecerá aquí cuando termine el análisis.</p>
+
+                <div class="result-details" id="result-details" hidden>
+                    <div class="confidence" id="confidence" data-level="alta">
+                        <span class="confidence-bars" aria-hidden="true"><i></i><i></i><i></i></span>
+                        <span id="confidence-text">Confianza alta</span>
+                    </div>
+
+                    <p class="result-explanation" id="result-explanation"></p>
+
+                    <ul class="result-warnings" id="result-warnings"></ul>
+
+                    <div class="others" id="others" hidden>
+                        <p class="others-title">También se ven en la imagen</p>
+                        <div class="chips" id="others-list"></div>
+                    </div>
+                </div>
+
+                <p class="result-note">
+                    <svg aria-hidden="true"><use href="#i-info"/></svg>
+                    La IA puede equivocarse con objetos muy pequeños, amontonados u ocultos.
+                </p>
+            </section>
+
+            <p class="sr-only" id="live" aria-live="polite"></p>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <p>
+            Proyecto 1.3: App web para identificación de patrones.
+            Diseñado y desarrollado por <strong>Fernando Rosales Tello</strong>.
+        </p>
+    </footer>
+
+    <script src="assets/js/app.js" defer></script>
+</body>
+</html>

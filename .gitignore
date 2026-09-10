@@ -1,0 +1,28 @@
+# Variables de entorno y claves API
+.env
+.env.*
+!.env.example
+
+# Vercel
+.vercel/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# Node (Vercel CLI)
+node_modules/
+
+# Archivos temporales y del sistema
+*.log
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
