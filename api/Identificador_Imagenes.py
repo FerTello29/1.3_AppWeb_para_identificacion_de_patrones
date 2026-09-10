@@ -10,10 +10,14 @@ import openai
 from openai import OpenAI
 
 
-ALLOWED_ORIGIN = os.environ.get(
-   "ALLOWED_ORIGIN",
-   ""
-).rstrip("/")
+# Una o varias direcciones separadas por comas, por ejemplo:
+# https://mi-app.vercel.app,https://mi-app-git-main-usuario.vercel.app
+# Si se deja vacía, se aceptan peticiones de cualquier origen.
+ALLOWED_ORIGINS = {
+   origin.strip().rstrip("/").lower()
+   for origin in os.environ.get("ALLOWED_ORIGIN", "").split(",")
+   if origin.strip()
+}
 
 OPENAI_MODEL = os.environ.get(
    "OPENAI_MODEL",
@@ -339,7 +343,7 @@ class handler(BaseHTTPRequestHandler):
    def add_cors_headers(self):
        origin = self.headers.get("Origin", "")
 
-       if ALLOWED_ORIGIN and origin == ALLOWED_ORIGIN:
+       if origin in ALLOWED_ORIGINS:
            self.send_header(
                "Access-Control-Allow-Origin",
                origin
@@ -371,7 +375,7 @@ class handler(BaseHTTPRequestHandler):
    def do_OPTIONS(self):
        origin = self.headers.get("Origin", "")
 
-       if ALLOWED_ORIGIN and origin != ALLOWED_ORIGIN:
+       if ALLOWED_ORIGINS and origin not in ALLOWED_ORIGINS:
            self.send_response(403)
            self.end_headers()
            return
@@ -407,7 +411,7 @@ class handler(BaseHTTPRequestHandler):
        try:
            origin = self.headers.get("Origin", "")
 
-           if ALLOWED_ORIGIN and origin != ALLOWED_ORIGIN:
+           if ALLOWED_ORIGINS and origin not in ALLOWED_ORIGINS:
                self.send_json(
                    403,
                    {"error": "Origen no autorizado."}
