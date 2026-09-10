@@ -6,7 +6,13 @@
 "use strict";
 
 (() => {
-    const API_URL = "/api/Identificador_Imagenes";
+    // En Vercel y en servidor_local.py la API está en el mismo sitio.
+    // GitHub Pages no ejecuta Python, así que desde ahí se usa la API de Vercel,
+    // donde está guardada la clave de OpenAI.
+    const VERCEL_API_URL = "https://1-3-app-web-para-identificacion-de-zeta.vercel.app/api/Identificador_Imagenes";
+    const API_URL = window.location.hostname.endsWith(".github.io")
+        ? VERCEL_API_URL
+        : "/api/Identificador_Imagenes";
 
     const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp"];
     const ALLOWED_EXTENSIONS = /\.(jpe?g|png|webp)$/i;
@@ -616,7 +622,13 @@
                 if (networkError.name === "AbortError") {
                     throw new UserError("El análisis tardó demasiado", "La IA no respondió a tiempo. Intenta de nuevo o usa una imagen más sencilla.");
                 }
-                throw new UserError("Sin conexión con el servidor", "Revisa tu conexión a internet e intenta de nuevo.");
+                if (API_URL !== VERCEL_API_URL) {
+                    throw new UserError("Sin conexión con el servidor", "Revisa tu conexión a internet e intenta de nuevo.");
+                }
+                throw new UserError(
+                    "No se pudo conectar con el servicio de análisis",
+                    `Revisa tu conexión a internet. Si el problema continúa, el servidor en Vercel debe autorizar la dirección ${window.location.origin} en ALLOWED_ORIGIN.`
+                );
             }
 
             let payload = null;
