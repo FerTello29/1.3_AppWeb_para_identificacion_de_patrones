@@ -24,6 +24,11 @@
     const MAX_OBJECT_CHARS = 60;
     const REQUEST_TIMEOUT_MS = 75_000;
     const DIGITS = 4;
+    // Escala de las coordenadas de ubicaciones en Identificador_Imagenes.py
+    const BOX_SCALE = 1000;
+    // Lado máximo de la imagen exportada (seguro también en iPhone).
+    const MAX_EXPORT_DIMENSION = 3840;
+    const MARK_COLOR = "#E5202E";
 
     const LOADING_MESSAGES = [
         "Buscando {obj} en la imagen…",
@@ -45,6 +50,7 @@
         cameraInput: $("#camera-input"),
         btnBrowse: $("#btn-browse"),
         btnCamera: $("#btn-camera"),
+        btnExport: $("#btn-export"),
         btnChange: $("#btn-change"),
         btnRemove: $("#btn-remove"),
         stepImage: $("#step-image"),
@@ -78,6 +84,11 @@
     const state = {
         dataUrl: null,
         previewUrl: null,
+        image: null,
+        fileName: "",
+        annotatedUrl: null,
+        annotatedName: "",
+        annotationId: 0,
         busy: false,
         preparing: false,
         loadingTimer: null,
@@ -104,14 +115,10 @@
         return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
     }
 
+    // Solo quita espacios sobrantes. La limpieza completa del texto
+    // (signos, "cuántos hay…", etc.) se hace en Identificador_Imagenes.py.
     function normalizeObject(value) {
-        return String(value || "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .replace(/^[¿¡"'.,:;]+|[?!"'.,:;]+$/g, "")
-            .replace(/^(contar|cuenta|cu[eé]ntame|cu[aá]nt[oa]s)\s+(hay\s+)?(de\s+)?((los|las|el|la)\s+)?/i, "")
-            .replace(/\s+hay(\s+en\s+la\s+(imagen|foto))?$/i, "")
-            .trim();
+        return String(value || "").replace(/\s+/g, " ").trim();
     }
 
     function isTouchDevice() {
@@ -221,6 +228,7 @@
         els.btnCount.disabled = busy;
         els.btnCount.setAttribute("aria-busy", String(busy));
         els.objectInput.disabled = busy;
+        els.btnExport.disabled = busy;
         els.btnChange.disabled = busy;
         els.btnRemove.disabled = busy;
         els.tray.dataset.scanning = String(busy);
@@ -253,8 +261,121 @@
         state.loadingTimer = window.setInterval(render, 2600);
     }
 
+    /* ---------- Imagen con los objetos marcados ---------- */
+
+    function clearAnnotation() {
+        // Invalida cualquier imagen marcada que todavía se esté generando.
+        state.annotationId += 1;
+
+        if (state.annotatedUrl) {
+            URL.revokeObjectURL(state.annotatedUrl);
+        }
+
+        state.annotatedUrl = null;
+        state.annotatedName = "";
+        els.btnExport.hidden = true;
+
+        if (state.previewUrl) {
+            els.previewImg.src = state.previewUrl;
+            els.previewImg.alt = `Vista previa de ${state.fileName || "la imagen cargada"}`;
+        }
+    }
+
+    function slugify(text) {
+        return text
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(/[̀-ͯ]/g, "")
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "") || "objetos";
+    }
+
+    // Dibuja la imagen original con un círculo rojo alrededor de cada objeto.
+    function drawAnnotation(img, locations) {
+        const scale = Math.min(1, MAX_EXPORT_DIMENSION / Math.max(img.naturalWidth, img.naturalHeight));
+        const width = Math.max(1, Math.round(img.naturalWidth * scale));
+        const height = Math.max(1, Math.round(img.naturalHeight * scale));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+
+        const context = canvas.getContext("2d");
+        context.fillStyle = "#FFFFFF";
+        context.fillRect(0, 0, width, height);
+        context.drawImage(img, 0, 0, width, height);
+
+        const lineWidth = Math.max(3, Math.round(Math.max(width, height) * 0.004));
+
+        locations.forEach((box) => {
+            const left = (box.x_min / BOX_SCALE) * width;
+            const right = (box.x_max / BOX_SCALE) * width;
+            const top = (box.y_min / BOX_SCALE) * height;
+            const bottom = (box.y_max / BOX_SCALE) * height;
+            const radius = (Math.max(right - left, bottom - top) / 2) * 1.12 + lineWidth;
+
+            context.beginPath();
+            context.arc((left + right) / 2, (top + bottom) / 2, radius, 0, Math.PI * 2);
+
+            // Un borde blanco debajo del rojo para que se vea sobre fondos rojos.
+            context.strokeStyle = "rgba(255, 255, 255, 0.85)";
+            context.lineWidth = lineWidth * 1.8;
+            context.stroke();
+
+            context.strokeStyle = MARK_COLOR;
+            context.lineWidth = lineWidth;
+            context.stroke();
+        });
+
+        return new Promise((resolve, reject) => {
+            canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("toBlob"))), "image/jpeg", 0.92);
+        });
+    }
+
+    async function showAnnotation(result) {
+        if (!state.image || result.ubicaciones.length === 0) {
+            return;
+        }
+
+        const id = state.annotationId;
+        let blob;
+
+        try {
+            blob = await drawAnnotation(state.image, result.ubicaciones);
+        } catch {
+            return;
+        }
+
+        // Si mientras se generaba se cambió la imagen o empezó otro conteo.
+        if (id !== state.annotationId) {
+            return;
+        }
+
+        const plural = result.objeto_plural || result.objeto_solicitado;
+
+        state.annotatedUrl = URL.createObjectURL(blob);
+        state.annotatedName = `cuentalo-${slugify(plural)}.jpg`;
+        els.previewImg.src = state.annotatedUrl;
+        els.previewImg.alt = `Imagen con ${result.ubicaciones.length} ${result.ubicaciones.length === 1 ? result.objeto_singular : plural} marcados con un círculo rojo`;
+        els.btnExport.hidden = false;
+    }
+
+    function exportAnnotation() {
+        if (!state.annotatedUrl) {
+            return;
+        }
+
+        const link = document.createElement("a");
+        link.href = state.annotatedUrl;
+        link.download = state.annotatedName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    }
+
     function resetResult() {
         stopLoadingMessages();
+        clearAnnotation();
         els.result.dataset.state = "idle";
         els.resultEmoji.textContent = "";
         els.resultLabel.textContent = "Resultado";
@@ -374,6 +495,8 @@
 
             state.previewUrl = url;
             state.dataUrl = encoded.dataUrl;
+            state.image = img;
+            state.fileName = file.name || "";
 
             els.previewImg.src = url;
             els.previewImg.alt = `Vista previa de ${file.name || "la imagen cargada"}`;
@@ -419,6 +542,8 @@
 
         state.previewUrl = null;
         state.dataUrl = null;
+        state.image = null;
+        state.fileName = "";
         els.previewImg.removeAttribute("src");
         els.preview.hidden = true;
         els.tray.dataset.state = "empty";
@@ -472,6 +597,9 @@
             ...result,
             advertencias: Array.isArray(result.advertencias) ? result.advertencias : [],
             otros_objetos: Array.isArray(result.otros_objetos) ? result.otros_objetos : [],
+            ubicaciones: Array.isArray(result.ubicaciones)
+                ? result.ubicaciones.filter((box) => box && ["x_min", "y_min", "x_max", "y_max"].every((key) => Number.isFinite(box[key])))
+                : [],
         };
     }
 
@@ -555,6 +683,10 @@
         els.resultDetails.hidden = false;
         els.stepCount.dataset.done = String(status === "done" || status === "empty");
         els.live.textContent = els.resultSentence.textContent;
+
+        if (status === "done") {
+            showAnnotation(result);
+        }
     }
 
     async function runCount(objectOverride) {
@@ -592,6 +724,7 @@
         }
 
         setBusy(true);
+        clearAnnotation();
         els.result.dataset.state = "loading";
         els.resultEmoji.textContent = "";
         els.resultLabel.textContent = `Contando ${object.toLowerCase()}`;
@@ -677,6 +810,7 @@
         }
     });
 
+    els.btnExport.addEventListener("click", exportAnnotation);
     els.btnChange.addEventListener("click", openPicker);
     els.btnRemove.addEventListener("click", removeImage);
 

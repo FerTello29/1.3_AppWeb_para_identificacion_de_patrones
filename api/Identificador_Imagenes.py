@@ -1,9 +1,13 @@
 import base64
 import binascii
 import json
+import math
 import os
 import re
+import threading
+import time
 
+from collections import deque
 from http.server import BaseHTTPRequestHandler
 
 import openai
@@ -35,6 +39,33 @@ MAX_BODY_BYTES = 4_000_000
 MAX_IMAGE_BYTES = 3_000_000
 MAX_OBJECT_CHARS = 60
 MAX_COUNT = 9999
+MAX_LOCATIONS = 100
+BOX_SCALE = 1000
+
+
+def read_int_env(name, default):
+   try:
+       return max(1, int(os.environ.get(name, "").strip()))
+   except ValueError:
+       return default
+
+
+# Límite de análisis por dirección IP para evitar que se gaste el saldo
+# de OpenAI. Se guarda en memoria, así que en Vercel cada instancia lleva
+# su propia cuenta: frena el abuso común, pero no reemplaza un límite
+# de gasto configurado en la cuenta de OpenAI.
+RATE_LIMIT_REQUESTS = read_int_env("RATE_LIMIT_REQUESTS", 10)
+RATE_LIMIT_WINDOW_SECONDS = read_int_env("RATE_LIMIT_WINDOW_SECONDS", 600)
+RATE_LIMIT_MAX_CLIENTS = 5000
+
+# Tope total de análisis entre todos los visitantes, para acotar
+# cuánto se puede gastar con la clave de OpenAI.
+GLOBAL_LIMIT_REQUESTS = read_int_env("GLOBAL_LIMIT_REQUESTS", 100)
+GLOBAL_LIMIT_WINDOW_SECONDS = read_int_env("GLOBAL_LIMIT_WINDOW_SECONDS", 86400)
+
+_rate_limit_hits = {}
+_global_hits = deque()
+_rate_limit_lock = threading.Lock()
 
 CONFIDENCE_LEVELS = ("alta", "media", "baja")
 GENDERS = ("masculino", "femenino")
@@ -90,6 +121,15 @@ Reglas:
   objetos contables que se vean claramente en la imagen, distintos
   al solicitado.
 - emoji: un solo emoji que represente el objeto.
+- ubicaciones: un recuadro por cada ejemplar contado, en el mismo
+  orden en que los contaste. Usa coordenadas enteras de 0 a 1000
+  relativas al ancho y alto de la imagen, donde (0, 0) es la esquina
+  superior izquierda: x_min y x_max en horizontal, y_min y y_max en
+  vertical. Cada recuadro debe ajustarse al contorno visible del
+  ejemplar. Debe haber tantos recuadros como la cantidad, salvo que
+  la cantidad supere 100: en ese caso incluye solo los 100 ejemplares
+  más claros y menciónalo en advertencias. Lista vacía si la cantidad
+  es 0.
 """
 
 
@@ -111,6 +151,20 @@ COUNT_SCHEMA = {
        "otros_objetos": {
            "type": "array",
            "items": {"type": "string"}
+       },
+       "ubicaciones": {
+           "type": "array",
+           "items": {
+               "type": "object",
+               "properties": {
+                   "x_min": {"type": "integer"},
+                   "y_min": {"type": "integer"},
+                   "x_max": {"type": "integer"},
+                   "y_max": {"type": "integer"}
+               },
+               "required": ["x_min", "y_min", "x_max", "y_max"],
+               "additionalProperties": False
+           }
        }
    },
    "required": [
@@ -123,7 +177,8 @@ COUNT_SCHEMA = {
        "confianza",
        "explicacion",
        "advertencias",
-       "otros_objetos"
+       "otros_objetos",
+       "ubicaciones"
    ],
    "additionalProperties": False
 }
@@ -140,6 +195,63 @@ class RequestError(Exception):
 
 class UnexpectedAIResponse(Exception):
    """La IA respondió, pero no con el formato esperado."""
+
+
+def seconds_until_free(hits, max_requests, window_start):
+   """Limpia los registros viejos y devuelve 0 o los segundos que faltan."""
+   while hits and hits[0] <= window_start:
+       hits.popleft()
+
+   if len(hits) >= max_requests:
+       return max(1, math.ceil(hits[0] - window_start))
+
+   return 0
+
+
+def check_rate_limit(client_id):
+   """Devuelve None si se permite el análisis o (segundos, mensaje)."""
+   now = time.monotonic()
+   client_window_start = now - RATE_LIMIT_WINDOW_SECONDS
+   global_window_start = now - GLOBAL_LIMIT_WINDOW_SECONDS
+
+   with _rate_limit_lock:
+       if len(_rate_limit_hits) >= RATE_LIMIT_MAX_CLIENTS:
+           for key in list(_rate_limit_hits):
+               if not _rate_limit_hits[key] or _rate_limit_hits[key][-1] <= client_window_start:
+                   del _rate_limit_hits[key]
+
+       hits = _rate_limit_hits.setdefault(client_id, deque())
+
+       wait = seconds_until_free(hits, RATE_LIMIT_REQUESTS, client_window_start)
+       if wait:
+           return wait, (
+               f"Alcanzaste el límite de {RATE_LIMIT_REQUESTS} análisis en "
+               f"{format_wait(RATE_LIMIT_WINDOW_SECONDS)}. "
+               f"Intenta de nuevo en {format_wait(wait)}."
+           )
+
+       wait = seconds_until_free(_global_hits, GLOBAL_LIMIT_REQUESTS, global_window_start)
+       if wait:
+           return wait, (
+               "La app alcanzó su límite de análisis por ahora. "
+               f"Intenta de nuevo en {format_wait(wait)}."
+           )
+
+       hits.append(now)
+       _global_hits.append(now)
+       return None
+
+
+def format_wait(seconds):
+   if seconds < 60:
+       return f"{seconds} segundos"
+
+   if seconds < 3600:
+       minutes = math.ceil(seconds / 60)
+       return "1 minuto" if minutes == 1 else f"{minutes} minutos"
+
+   hours = math.ceil(seconds / 3600)
+   return "1 hora" if hours == 1 else f"{hours} horas"
 
 
 def clean_text(value, limit):
@@ -244,7 +356,8 @@ def request_count(client, image_data_url, object_name, effort):
                "strict": True
            }
        },
-       max_output_tokens=4000
+       # Margen para el razonamiento y hasta 100 recuadros de ubicación.
+       max_output_tokens=8000
    )
 
 
@@ -323,6 +436,31 @@ def parse_model_response(response, requested_object):
        if name and name not in excluded and name not in others:
            others.append(name)
 
+   locations = []
+   if countable and count > 0:
+       for item in data.get("ubicaciones") or []:
+           if not isinstance(item, dict):
+               continue
+
+           try:
+               x_min, y_min, x_max, y_max = (
+                   max(0, min(int(item[key]), BOX_SCALE))
+                   for key in ("x_min", "y_min", "x_max", "y_max")
+               )
+           except (KeyError, TypeError, ValueError):
+               continue
+
+           x_min, x_max = sorted((x_min, x_max))
+           y_min, y_max = sorted((y_min, y_max))
+
+           if x_max > x_min and y_max > y_min:
+               locations.append({
+                   "x_min": x_min,
+                   "y_min": y_min,
+                   "x_max": x_max,
+                   "y_max": y_max
+               })
+
    return {
        "objeto_solicitado": requested_object,
        "es_objeto_contable": countable,
@@ -334,7 +472,8 @@ def parse_model_response(response, requested_object):
        "confianza": confidence,
        "explicacion": clean_text(data.get("explicacion"), 400),
        "advertencias": warnings[:4],
-       "otros_objetos": others[:6]
+       "otros_objetos": others[:6],
+       "ubicaciones": locations[:MAX_LOCATIONS]
    }
 
 
@@ -351,7 +490,15 @@ class handler(BaseHTTPRequestHandler):
            self.send_header("Vary", "Origin")
 
 
-   def send_json(self, status_code, data):
+   def client_id(self):
+       # Vercel coloca la IP real del visitante al inicio de X-Forwarded-For.
+       forwarded = self.headers.get("X-Forwarded-For", "")
+       first = forwarded.split(",", 1)[0].strip()
+
+       return first or self.headers.get("X-Real-IP", "").strip() or self.client_address[0]
+
+
+   def send_json(self, status_code, data, headers=None):
        body = json.dumps(
            data,
            ensure_ascii=False
@@ -362,6 +509,8 @@ class handler(BaseHTTPRequestHandler):
            "Content-Type",
            "application/json; charset=utf-8"
        )
+       for name, value in (headers or {}).items():
+           self.send_header(name, value)
        self.add_cors_headers()
        self.send_header(
            "Content-Length",
@@ -483,6 +632,19 @@ class handler(BaseHTTPRequestHandler):
                self.send_json(
                    500,
                    {"error": "OPENAI_API_KEY no está configurada."}
+               )
+               return
+
+           # Se revisa al final para que las peticiones inválidas
+           # no consuman el límite del usuario.
+           limited = check_rate_limit(self.client_id())
+
+           if limited:
+               wait_seconds, message = limited
+               self.send_json(
+                   429,
+                   {"error": message},
+                   {"Retry-After": str(wait_seconds)}
                )
                return
 
