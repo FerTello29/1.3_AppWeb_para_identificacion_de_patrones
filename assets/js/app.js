@@ -30,6 +30,22 @@
     const MAX_EXPORT_DIMENSION = 3840;
     const MARK_COLOR = "#E5202E";
 
+    const AUTHOR_NAME = "Fernando Rosales Tello";
+    const LINKEDIN_URL = "https://www.linkedin.com/in/fernando-rosales-tello-598698349";
+    const LINKEDIN_LABEL = "linkedin.com/in/fernando-rosales-tello-598698349";
+    // Se carga solo cuando alguien exporta un PDF.
+    const JSPDF_URL = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+
+    // Colores de styles.css para la imagen y el PDF exportados.
+    const COLORS = {
+        ink: "#14213D",
+        inkSoft: "#4E5C77",
+        paper: "#F6F8F7",
+        line: "#C4CFCC",
+        signal: "#FFC83D",
+    };
+    const REPORT_FONT = '"Bricolage Grotesque", "Segoe UI", system-ui, sans-serif';
+
     const LOADING_MESSAGES = [
         "Buscando {obj} en la imagen…",
         "Recorriendo la imagen por zonas…",
@@ -51,6 +67,7 @@
         btnBrowse: $("#btn-browse"),
         btnCamera: $("#btn-camera"),
         btnExport: $("#btn-export"),
+        btnExportPdf: $("#btn-export-pdf"),
         btnChange: $("#btn-change"),
         btnRemove: $("#btn-remove"),
         stepImage: $("#step-image"),
@@ -88,7 +105,10 @@
         fileName: "",
         annotatedUrl: null,
         annotatedName: "",
+        annotatedCanvas: null,
+        annotatedResult: null,
         annotationId: 0,
+        exporting: false,
         busy: false,
         preparing: false,
         loadingTimer: null,
@@ -229,6 +249,7 @@
         els.btnCount.setAttribute("aria-busy", String(busy));
         els.objectInput.disabled = busy;
         els.btnExport.disabled = busy;
+        els.btnExportPdf.disabled = busy;
         els.btnChange.disabled = busy;
         els.btnRemove.disabled = busy;
         els.tray.dataset.scanning = String(busy);
@@ -273,7 +294,10 @@
 
         state.annotatedUrl = null;
         state.annotatedName = "";
+        state.annotatedCanvas = null;
+        state.annotatedResult = null;
         els.btnExport.hidden = true;
+        els.btnExportPdf.hidden = true;
 
         if (state.previewUrl) {
             els.previewImg.src = state.previewUrl;
@@ -327,8 +351,12 @@
             context.stroke();
         });
 
+        return canvas;
+    }
+
+    function canvasToBlob(canvas, type, quality) {
         return new Promise((resolve, reject) => {
-            canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("toBlob"))), "image/jpeg", 0.92);
+            canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("toBlob"))), type, quality);
         });
     }
 
@@ -338,10 +366,12 @@
         }
 
         const id = state.annotationId;
+        let canvas;
         let blob;
 
         try {
-            blob = await drawAnnotation(state.image, result.ubicaciones);
+            canvas = drawAnnotation(state.image, result.ubicaciones);
+            blob = await canvasToBlob(canvas, "image/jpeg", 0.92);
         } catch {
             return;
         }
@@ -354,23 +384,297 @@
         const plural = result.objeto_plural || result.objeto_solicitado;
 
         state.annotatedUrl = URL.createObjectURL(blob);
-        state.annotatedName = `cuentalo-${slugify(plural)}.jpg`;
+        state.annotatedName = `cuentalo-${slugify(plural)}`;
+        state.annotatedCanvas = canvas;
+        state.annotatedResult = result;
         els.previewImg.src = state.annotatedUrl;
         els.previewImg.alt = `Imagen con ${result.ubicaciones.length} ${result.ubicaciones.length === 1 ? result.objeto_singular : plural} marcados con un círculo rojo`;
         els.btnExport.hidden = false;
+        els.btnExportPdf.hidden = false;
     }
 
-    function exportAnnotation() {
-        if (!state.annotatedUrl) {
-            return;
+    /* ---------- Exportar imagen y PDF ---------- */
+
+    // Datos del conteo que se escriben en la imagen y en el PDF.
+    function buildSummary(result) {
+        const [lead, strong] = buildSentence(result);
+        const marked = result.ubicaciones.length;
+        const plural = result.objeto_plural || result.objeto_solicitado;
+
+        return {
+            date: new Date().toLocaleString("es-MX", { dateStyle: "long", timeStyle: "short" }),
+            searched: result.objeto_solicitado,
+            found: strong ? `${lead}${strong}.` : lead,
+            marked: marked === result.cantidad
+                ? ""
+                : `En la imagen se marcaron ${marked} ${marked === 1 ? result.objeto_singular : plural}.`,
+            confidence: `Confianza ${result.confianza}`,
+            explanation: result.explicacion || "",
+            warnings: result.advertencias,
+            others: result.otros_objetos.length ? `También se ven: ${result.otros_objetos.join(", ")}.` : "",
+        };
+    }
+
+    function wrapText(context, text, maxWidth) {
+        const lines = [];
+        let line = "";
+
+        text.split(" ").forEach((word) => {
+            const candidate = line ? `${line} ${word}` : word;
+            if (line && context.measureText(candidate).width > maxWidth) {
+                lines.push(line);
+                line = word;
+            } else {
+                line = candidate;
+            }
+        });
+
+        if (line) {
+            lines.push(line);
+        }
+        return lines;
+    }
+
+    // Agrega debajo de la imagen marcada una franja con la descripción
+    // del conteo y los datos de contacto.
+    async function composeReportImage(annotated, summary) {
+        const width = annotated.width;
+        const base = Math.round(Math.min(Math.max(width / 55, 14), 44));
+        const pad = Math.round(base * 1.6);
+        const maxTextWidth = width - pad * 2;
+        const font = (weight, size) => `${weight} ${size}px ${REPORT_FONT}`;
+
+        try {
+            await document.fonts.load(font(800, base));
+        } catch {
+            // Si la fuente no carga se usa la del sistema.
         }
 
+        const measure = document.createElement("canvas").getContext("2d");
+        const rows = [];
+        const add = (text, { weight = 400, size = base, color = COLORS.inkSoft, gap = 0 } = {}) => {
+            if (!text) {
+                return;
+            }
+            measure.font = font(weight, size);
+            wrapText(measure, text, maxTextWidth).forEach((line, index) => {
+                rows.push({ line, weight, size, color, gap: index === 0 ? gap : 0 });
+            });
+        };
+
+        add("Cuéntalo · Conteo de objetos con IA", { weight: 800, size: Math.round(base * 1.35), color: COLORS.ink });
+        add(summary.date, { size: Math.round(base * 0.85) });
+        add(`Objeto buscado: ${summary.searched}`, { weight: 700, color: COLORS.ink, gap: base * 0.8 });
+        add(summary.found, { weight: 700, color: COLORS.ink });
+        add(summary.marked);
+        add(summary.confidence);
+        add(summary.explanation, { gap: base * 0.5 });
+        summary.warnings.forEach((warning) => add(`• ${warning}`));
+        add(summary.others);
+        rows.push({ divider: true, gap: base * 0.9 });
+        add(`Proyecto de ${AUTHOR_NAME}. ¿Quieres un proyecto similar? Contáctame en LinkedIn:`, { gap: base * 0.9 });
+        add(LINKEDIN_LABEL, { weight: 700, color: COLORS.ink });
+
+        const lineHeight = (row) => (row.divider ? 1 : row.size * 1.35);
+        const bandHeight = Math.ceil(pad * 2 + rows.reduce((sum, row) => sum + row.gap + lineHeight(row), 0));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = annotated.height + bandHeight;
+
+        const context = canvas.getContext("2d");
+        context.drawImage(annotated, 0, 0);
+        context.fillStyle = COLORS.paper;
+        context.fillRect(0, annotated.height, width, bandHeight);
+        context.fillStyle = COLORS.signal;
+        context.fillRect(0, annotated.height, width, Math.max(4, Math.round(base * 0.3)));
+
+        context.textBaseline = "top";
+        let y = annotated.height + pad;
+
+        rows.forEach((row) => {
+            y += row.gap;
+            if (row.divider) {
+                context.fillStyle = COLORS.line;
+                context.fillRect(pad, y, maxTextWidth, Math.max(1, Math.round(base / 14)));
+            } else {
+                context.font = font(row.weight, row.size);
+                context.fillStyle = row.color;
+                context.fillText(row.line, pad, y);
+            }
+            y += lineHeight(row);
+        });
+
+        return canvas;
+    }
+
+    function downloadBlob(blob, fileName) {
+        const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
-        link.href = state.annotatedUrl;
-        link.download = state.annotatedName;
+        link.href = url;
+        link.download = fileName;
         document.body.appendChild(link);
         link.click();
         link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    }
+
+    let jsPdfPromise = null;
+
+    function loadJsPdf() {
+        if (window.jspdf) {
+            return Promise.resolve(window.jspdf.jsPDF);
+        }
+
+        if (!jsPdfPromise) {
+            jsPdfPromise = new Promise((resolve, reject) => {
+                const script = document.createElement("script");
+                script.src = JSPDF_URL;
+                script.async = true;
+                script.onload = () => (window.jspdf ? resolve(window.jspdf.jsPDF) : reject(new Error("jspdf")));
+                script.onerror = () => {
+                    jsPdfPromise = null;
+                    script.remove();
+                    reject(new UserError("No se pudo crear el PDF", "Revisa tu conexión a internet e intenta de nuevo."));
+                };
+                document.head.appendChild(script);
+            });
+        }
+
+        return jsPdfPromise;
+    }
+
+    // Las fuentes estándar del PDF solo cubren el alfabeto latino básico.
+    function pdfSafe(text) {
+        return String(text || "")
+            .replace(/[“”«»]/g, '"')
+            .replace(/[‘’]/g, "'")
+            .replace(/[–—]/g, "-")
+            .replace(/…/g, "...")
+            .replace(/[^\x20-\xFF]/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    async function buildPdf(annotated, summary) {
+        const JsPDF = await loadJsPdf();
+        const doc = new JsPDF({ unit: "mm", format: "a4" });
+
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const margin = 16;
+        const contentWidth = pageWidth - margin * 2;
+        const bottom = pageHeight - margin - 14;
+        const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+        let y = margin + 4;
+
+        const paragraph = (text, { size = 11, style = "normal", color = COLORS.inkSoft, gap = 0 } = {}) => {
+            const clean = pdfSafe(text);
+            if (!clean) {
+                return;
+            }
+            y += gap;
+            doc.setFont("helvetica", style);
+            doc.setFontSize(size);
+            doc.setTextColor(...rgb(color));
+
+            const lineHeight = size * 0.3528 * 1.4;
+            doc.splitTextToSize(clean, contentWidth).forEach((line) => {
+                if (y + lineHeight > bottom) {
+                    doc.addPage();
+                    y = margin;
+                }
+                doc.text(line, margin, y, { baseline: "top" });
+                y += lineHeight;
+            });
+        };
+
+        doc.setFillColor(...rgb(COLORS.signal));
+        doc.rect(0, 0, pageWidth, 4, "F");
+
+        paragraph("Cuéntalo", { size: 22, style: "bold", color: COLORS.ink });
+        paragraph("Resultado del conteo de objetos con IA", { size: 12 });
+        paragraph(summary.date, { size: 10 });
+
+        paragraph(`Objeto buscado: ${summary.searched}`, { size: 13, style: "bold", color: COLORS.ink, gap: 6 });
+        paragraph(summary.found, { size: 13, style: "bold", color: COLORS.ink });
+        paragraph(summary.marked);
+        paragraph(summary.confidence);
+        paragraph(summary.explanation, { gap: 3 });
+        summary.warnings.forEach((warning) => paragraph(`- ${warning}`));
+        paragraph(summary.others);
+
+        // Imagen con los objetos marcados, ajustada al espacio disponible.
+        const ratio = annotated.height / annotated.width;
+        y += 6;
+        if (bottom - y < 70) {
+            doc.addPage();
+            y = margin;
+        }
+        let imageWidth = contentWidth;
+        let imageHeight = imageWidth * ratio;
+        if (imageHeight > bottom - y) {
+            imageHeight = bottom - y;
+            imageWidth = imageHeight / ratio;
+        }
+        const imageX = margin + (contentWidth - imageWidth) / 2;
+        doc.addImage(annotated.toDataURL("image/jpeg", 0.88), "JPEG", imageX, y, imageWidth, imageHeight);
+        doc.setDrawColor(...rgb(COLORS.line));
+        doc.rect(imageX, y, imageWidth, imageHeight, "S");
+
+        // Pie con los datos de contacto en cada página.
+        const pages = doc.getNumberOfPages();
+        for (let page = 1; page <= pages; page += 1) {
+            doc.setPage(page);
+            doc.setDrawColor(...rgb(COLORS.line));
+            doc.line(margin, pageHeight - margin - 9, pageWidth - margin, pageHeight - margin - 9);
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(9);
+            doc.setTextColor(...rgb(COLORS.inkSoft));
+            doc.text(pdfSafe(`Proyecto de ${AUTHOR_NAME}. ¿Quieres un proyecto similar? Contáctame en LinkedIn:`), margin, pageHeight - margin - 4);
+            doc.setFont("helvetica", "bold");
+            doc.setTextColor(...rgb(COLORS.ink));
+            doc.textWithLink(LINKEDIN_LABEL, margin, pageHeight - margin + 1, { url: LINKEDIN_URL });
+        }
+
+        return doc.output("blob");
+    }
+
+    async function exportReport(format) {
+        if (!state.annotatedCanvas || state.exporting || state.busy) {
+            return;
+        }
+
+        const id = state.annotationId;
+        const canvas = state.annotatedCanvas;
+        const summary = buildSummary(state.annotatedResult);
+        const fileName = state.annotatedName;
+
+        state.exporting = true;
+        els.btnExport.disabled = true;
+        els.btnExportPdf.disabled = true;
+        hideAlert();
+
+        try {
+            const blob = format === "pdf"
+                ? await buildPdf(canvas, summary)
+                : await canvasToBlob(await composeReportImage(canvas, summary), "image/jpeg", 0.92);
+
+            // Si mientras se generaba se cambió la imagen o empezó otro conteo.
+            if (id === state.annotationId) {
+                downloadBlob(blob, `${fileName}.${format === "pdf" ? "pdf" : "jpg"}`);
+            }
+        } catch (error) {
+            if (error instanceof UserError) {
+                showAlert(error.title, error.detail);
+            } else {
+                showAlert("No se pudo exportar", "Ocurrió un problema al generar el archivo. Intenta de nuevo.");
+            }
+        } finally {
+            state.exporting = false;
+            els.btnExport.disabled = state.busy;
+            els.btnExportPdf.disabled = state.busy;
+        }
     }
 
     function resetResult() {
@@ -810,7 +1114,8 @@
         }
     });
 
-    els.btnExport.addEventListener("click", exportAnnotation);
+    els.btnExport.addEventListener("click", () => exportReport("image"));
+    els.btnExportPdf.addEventListener("click", () => exportReport("pdf"));
     els.btnChange.addEventListener("click", openPicker);
     els.btnRemove.addEventListener("click", removeImage);
 

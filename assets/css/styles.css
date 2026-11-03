@@ -489,8 +489,10 @@ kbd {
 
 .preview-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     flex-shrink: 0;
+    max-width: 100%;
 }
 
 /* ---------- Botones ---------- */
@@ -1137,6 +1139,12 @@ kbd {
 .footer strong {
     color: var(--ink);
     font-weight: 700;
+}
+
+.footer a {
+    color: var(--ink);
+    font-weight: 700;
+    text-underline-offset: 3px;
 }
 
 /* ---------- Pantallas pequeñas ---------- */
